@@ -276,7 +276,7 @@ public class ScanQueryEngine
   {
     List<String> sortColumns = query.getOrderBys().stream().map(orderBy -> orderBy.getColumnName()).collect(Collectors.toList());
     List<String> orderByDirection = query.getOrderBys().stream().map(orderBy -> orderBy.getOrder().toString()).collect(Collectors.toList());
-    final int limit = (int) query.getScanRowsLimit();
+    final int limit = Math.toIntExact(query.getScanRowsLimit());
     Comparator<MultiColumnSorter.MultiColumnSorterElement<Long>> comparator = new Comparator<MultiColumnSorter.MultiColumnSorterElement<Long>>()
     {
       @Override

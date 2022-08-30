@@ -22,6 +22,7 @@ package org.apache.druid.collections;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.MinMaxPriorityQueue;
 import com.google.common.collect.Ordering;
+import org.apache.druid.java.util.common.ISE;
 
 import java.util.Comparator;
 import java.util.Iterator;
@@ -42,16 +43,21 @@ public class MultiColumnSorter<T>
   }
 
   /**
-   * Offer an element to the sorter.
+   * Offer an element to the sorter.If there are multiple values of different types in the same column, a CalssCastException will be thrown
    */
   public void add(T element, List<Comparable> orderByColumns)
   {
-    for (Comparable orderByColumn :orderByColumns){
+    for (Comparable orderByColumn : orderByColumns) {
       if (Objects.isNull(orderByColumn)) {
         return;
       }
     }
-    queue.offer(new MultiColumnSorterElement<>(element, orderByColumns));
+    try {
+      queue.offer(new MultiColumnSorterElement<>(element, orderByColumns));
+    }
+    catch (ClassCastException e) {
+      throw new ISE("Multiple values of different types scanOrderBy are not allowed in the same column.");
+    }
   }
 
   /**

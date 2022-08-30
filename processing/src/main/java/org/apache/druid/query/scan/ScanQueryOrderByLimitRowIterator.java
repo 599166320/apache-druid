@@ -57,7 +57,7 @@ public class ScanQueryOrderByLimitRowIterator extends ScanQueryLimitRowIterator
     if (ScanQuery.ResultFormat.RESULT_FORMAT_VALUE_VECTOR.equals(resultFormat)) {
       throw new UOE(ScanQuery.ResultFormat.RESULT_FORMAT_VALUE_VECTOR + " is not supported yet");
     }
-    final int limit = (int) query.getScanRowsLimit();
+    final int limit = Math.toIntExact(query.getScanRowsLimit());
     List<String> sortColumns = query.getOrderBys().stream().map(orderBy -> orderBy.getColumnName()).collect(Collectors.toList());
     List<String> orderByDirection = query.getOrderBys().stream().map(orderBy -> orderBy.getOrder().toString()).collect(Collectors.toList());
     Comparator<MultiColumnSorter.MultiColumnSorterElement<Object>> comparator = new Comparator<MultiColumnSorter.MultiColumnSorterElement<Object>>()

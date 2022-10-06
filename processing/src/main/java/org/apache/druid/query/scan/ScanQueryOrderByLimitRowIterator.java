@@ -20,8 +20,8 @@
 package org.apache.druid.query.scan;
 
 import com.google.common.collect.Iterators;
-import org.apache.druid.collections.MultiColumnSorter;
-import org.apache.druid.collections.QueueBasedMultiColumnSorter;
+import org.apache.druid.collections.QueueBasedSorter;
+import org.apache.druid.collections.Sorter;
 import org.apache.druid.java.util.common.UOE;
 import org.apache.druid.java.util.common.guava.Comparators;
 import org.apache.druid.query.QueryPlus;
@@ -62,27 +62,29 @@ public class ScanQueryOrderByLimitRowIterator extends ScanQueryLimitRowIterator
     final int limit = Math.toIntExact(query.getScanRowsLimit());
     List<String> sortColumns = query.getOrderBys().stream().map(orderBy -> orderBy.getColumnName()).collect(Collectors.toList());
     List<String> orderByDirection = query.getOrderBys().stream().map(orderBy -> orderBy.getOrder().toString()).collect(Collectors.toList());
-    Comparator<MultiColumnSorter.MultiColumnSorterElement<Object>> comparator = new Comparator<MultiColumnSorter.MultiColumnSorterElement<Object>>()
+    Comparator<Sorter.SorterElement<Object>> comparator = new Comparator<Sorter.SorterElement<Object>>()
     {
       @Override
       public int compare(
-          MultiColumnSorter.MultiColumnSorterElement<Object> o1,
-          MultiColumnSorter.MultiColumnSorterElement<Object> o2
+          Sorter.SorterElement<Object> o1,
+          Sorter.SorterElement<Object> o2
       )
       {
         for (int i = 0; i < o1.getOrderByColumValues().size(); i++) {
-          if (o1.getOrderByColumValues().get(i) != (o2.getOrderByColumValues().get(i))) {
-            if (ScanQuery.Order.ASCENDING.equals(ScanQuery.Order.fromString(orderByDirection.get(i)))) {
-              return Comparators.<Comparable>naturalNullsFirst().compare(o1.getOrderByColumValues().get(i), o2.getOrderByColumValues().get(i));
-            } else {
-              return Comparators.<Comparable>naturalNullsFirst().compare(o2.getOrderByColumValues().get(i), o1.getOrderByColumValues().get(i));
-            }
+          int compare;
+          if (ScanQuery.Order.ASCENDING.equals(ScanQuery.Order.fromString(orderByDirection.get(i)))) {
+            compare = Comparators.<Comparable>naturalNullsFirst().compare(o1.getOrderByColumValues().get(i), o2.getOrderByColumValues().get(i));
+          } else {
+            compare = Comparators.<Comparable>naturalNullsFirst().compare(o2.getOrderByColumValues().get(i), o1.getOrderByColumValues().get(i));
+          }
+          if (compare != 0) {
+            return compare;
           }
         }
         return 0;
       }
     };
-    MultiColumnSorter<Object> multiColumnSorter = new QueueBasedMultiColumnSorter<Object>(limit, comparator);
+    Sorter<Object> sorter = new QueueBasedSorter<Object>(limit, comparator);
 
     List<String> columns = new ArrayList<>();
     while (!yielder.isDone()) {
@@ -99,14 +101,14 @@ public class ScanQueryOrderByLimitRowIterator extends ScanQueryLimitRowIterator
           sortValues = idxs.stream().map(idx -> ((List<Comparable>) event).get(idx)).collect(Collectors.toList());
         }
 
-        multiColumnSorter.add(new MultiColumnSorter.MultiColumnSorterElement<>(event, sortValues));
+        sorter.add(new Sorter.SorterElement<>(event, sortValues));
       }
 
       yielder = yielder.next(null);
       count++;
     }
-    final List<Object> sortedElements = new ArrayList<>(multiColumnSorter.size());
-    Iterators.addAll(sortedElements, multiColumnSorter.drainElement());
+    final List<Object> sortedElements = new ArrayList<>(sorter.size());
+    Iterators.addAll(sortedElements, sorter.drainElement());
     return new ScanResultValue(null, columns, sortedElements);
   }
 }

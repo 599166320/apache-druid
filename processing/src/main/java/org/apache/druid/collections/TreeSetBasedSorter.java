@@ -31,18 +31,18 @@ import java.util.stream.Collectors;
 /**
  *  This sorter will de duplicate key during sorting
  */
-public class TreeSetBasedMulticolumnSorter<T> implements MultiColumnSorter<T>
+public class TreeSetBasedSorter<T> implements Sorter<T>
 {
-  private final TreeSet<MultiColumnSorterElement<T>> treeSet;
+  private final TreeSet<SorterElement<T>> treeSet;
 
-  public TreeSetBasedMulticolumnSorter(Comparator<MultiColumnSorter.MultiColumnSorterElement<T>> comparator)
+  public TreeSetBasedSorter(Comparator<SorterElement<T>> comparator)
   {
     treeSet = new TreeSet<>(comparator);
   }
 
 
   @Override
-  public void add(MultiColumnSorter.MultiColumnSorterElement<T> sorterElement)
+  public void add(SorterElement<T> sorterElement)
   {
     try {
       treeSet.add(sorterElement);

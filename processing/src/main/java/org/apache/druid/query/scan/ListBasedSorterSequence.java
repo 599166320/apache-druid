@@ -19,8 +19,8 @@
 
 package org.apache.druid.query.scan;
 
-import org.apache.druid.collections.ListBasedMulticolumnSorter;
-import org.apache.druid.collections.MultiColumnSorter;
+import org.apache.druid.collections.ListBasedSorter;
+import org.apache.druid.collections.Sorter;
 import org.apache.druid.java.util.common.guava.BaseSequence;
 import org.apache.druid.segment.BaseObjectColumnValueSelector;
 import org.apache.druid.segment.Cursor;
@@ -108,15 +108,15 @@ class ListBasedSorterSequence extends BaseSequence<ScanResultValue, Iterator<Sca
 
 
         @Override
-        MultiColumnSorter<Map<String, Object>> rowsToListMulticolumnSorter()
+        Sorter<Map<String, Object>> rowsToListSorter()
         {
-          return new ListBasedMulticolumnSorter<Map<String, Object>>(rowsToListComparator());
+          return new ListBasedSorter<Map<String, Object>>(rowsToListComparator());
         }
 
         @Override
-        MultiColumnSorter<List<Object>> rowsToCompactedListMulticolumnSorter()
+        Sorter<List<Object>> rowsToCompactedListSorter()
         {
-          return new ListBasedMulticolumnSorter<List<Object>>(rowsToCompactedListComparator());
+          return new ListBasedSorter<List<Object>>(rowsToCompactedListComparator());
         }
       };
     }

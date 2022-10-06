@@ -19,8 +19,8 @@
 
 package org.apache.druid.query.scan;
 
-import org.apache.druid.collections.MultiColumnSorter;
-import org.apache.druid.collections.TreeMultisetBasedMulticolumnSorter;
+import org.apache.druid.collections.Sorter;
+import org.apache.druid.collections.TreeMultisetBasedSorter;
 import org.apache.druid.java.util.common.guava.BaseSequence;
 import org.apache.druid.segment.BaseObjectColumnValueSelector;
 import org.apache.druid.segment.Cursor;
@@ -106,15 +106,15 @@ public class TreeMultisetBasedSorterSequence extends BaseSequence<ScanResultValu
       )
       {
         @Override
-        MultiColumnSorter<List<Object>> rowsToCompactedListMulticolumnSorter()
+        Sorter<List<Object>> rowsToCompactedListSorter()
         {
-          return new TreeMultisetBasedMulticolumnSorter<List<Object>>(rowsToCompactedListComparator());
+          return new TreeMultisetBasedSorter<List<Object>>(rowsToCompactedListComparator());
         }
 
         @Override
-        MultiColumnSorter<Map<String, Object>> rowsToListMulticolumnSorter()
+        Sorter<Map<String, Object>> rowsToListSorter()
         {
-          return new TreeMultisetBasedMulticolumnSorter<Map<String, Object>>(rowsToListComparator());
+          return new TreeMultisetBasedSorter<Map<String, Object>>(rowsToListComparator());
         }
       };
     }

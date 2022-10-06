@@ -21,7 +21,8 @@ package org.apache.druid.query.scan;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
-import org.apache.druid.collections.MultiColumnSorter;
+import com.google.common.collect.Ordering;
+import org.apache.druid.collections.Sorter;
 import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.UOE;
@@ -38,8 +39,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
-import java.util.Objects;
 
+/**
+ * Wraps a cursor, sorting the results
+ */
 abstract class BasedSorterIterator implements Iterator<ScanResultValue>
 {
   protected final List<String> sortColumns;
@@ -50,7 +53,7 @@ abstract class BasedSorterIterator implements Iterator<ScanResultValue>
   protected final ScanQuery query;
   protected final SegmentId segmentId;
   protected final List<String> allColumns;
-  protected List<String> orderByDirection;
+  protected final Ordering<Comparable>[] orderings;
   protected final List<BaseObjectColumnValueSelector> columnSelectors;
 
   BasedSorterIterator(
@@ -74,8 +77,11 @@ abstract class BasedSorterIterator implements Iterator<ScanResultValue>
     this.query = query;
     this.segmentId = segmentId;
     this.allColumns = allColumns;
-    this.orderByDirection = orderByDirection;
     this.columnSelectors = columnSelectors;
+    orderings = new Ordering[orderByDirection.size()];
+    for (int i = 0; i < orderByDirection.size(); i++) {
+      orderings[i] = ScanQuery.Order.ASCENDING.equals(ScanQuery.Order.fromString(orderByDirection.get(i))) ? Comparators.<Comparable>naturalNullsFirst() : Comparators.<Comparable>naturalNullsFirst().reverse();
+    }
   }
 
   @Override
@@ -105,16 +111,9 @@ abstract class BasedSorterIterator implements Iterator<ScanResultValue>
     return new ScanResultValue(segmentId.toString(), allColumns, events);
   }
 
-  @Override
-  public void remove()
-  {
-    throw new UnsupportedOperationException();
-  }
-
-
   protected List<List<Object>> rowsToCompactedList()
   {
-    final MultiColumnSorter<List<Object>> multiColumnSorter = rowsToCompactedListMulticolumnSorter();
+    final Sorter<List<Object>> sorter = rowsToCompactedListSorter();
     for (; !cursor.isDone(); cursor.advance()) {
       final List<Object> theEvent = new ArrayList<>(allColumns.size());
       List<Comparable> sortValues = new ArrayList<>();
@@ -125,15 +124,15 @@ abstract class BasedSorterIterator implements Iterator<ScanResultValue>
           sortValues.add((Comparable) obj);
         }
       }
-      multiColumnSorter.add(new MultiColumnSorter.MultiColumnSorterElement<List<Object>>(theEvent, sortValues));
+      sorter.add(new Sorter.SorterElement<List<Object>>(theEvent, sortValues));
     }
-    return Lists.newArrayList(multiColumnSorter.drainElement());
+    return Lists.newArrayList(sorter.drainElement());
   }
 
   protected List<Map<String, Object>> rowsToList()
   {
 
-    final MultiColumnSorter<Map<String, Object>> multiColumnSorter = rowsToListMulticolumnSorter();
+    final Sorter<Map<String, Object>> sorter = rowsToListSorter();
 
     for (; !cursor.isDone(); cursor.advance()) {
       final Map<String, Object> theEvent = new LinkedHashMap<>();
@@ -145,9 +144,9 @@ abstract class BasedSorterIterator implements Iterator<ScanResultValue>
           sortValues.add((Comparable) obj);
         }
       }
-      multiColumnSorter.add(new MultiColumnSorter.MultiColumnSorterElement<>(theEvent, sortValues));
+      sorter.add(new Sorter.SorterElement<>(theEvent, sortValues));
     }
-    return Lists.newArrayList(multiColumnSorter.drainElement());
+    return Lists.newArrayList(sorter.drainElement());
   }
 
   protected Object getColumnValue(int i)
@@ -165,25 +164,20 @@ abstract class BasedSorterIterator implements Iterator<ScanResultValue>
     return value;
   }
 
-  protected Comparator<MultiColumnSorter.MultiColumnSorterElement<Map<String, Object>>> rowsToListComparator()
+  protected Comparator<Sorter.SorterElement<Map<String, Object>>> rowsToListComparator()
   {
-    Comparator<MultiColumnSorter.MultiColumnSorterElement<Map<String, Object>>> comparator = new Comparator<MultiColumnSorter.MultiColumnSorterElement<Map<String, Object>>>()
+    Comparator<Sorter.SorterElement<Map<String, Object>>> comparator = new Comparator<Sorter.SorterElement<Map<String, Object>>>()
     {
       @Override
       public int compare(
-          MultiColumnSorter.MultiColumnSorterElement<Map<String, Object>> o1,
-          MultiColumnSorter.MultiColumnSorterElement<Map<String, Object>> o2
+          Sorter.SorterElement<Map<String, Object>> o1,
+          Sorter.SorterElement<Map<String, Object>> o2
       )
       {
         for (int i = 0; i < o1.getOrderByColumValues().size(); i++) {
-          if (!Objects.equals(o1.getOrderByColumValues().get(i), (o2.getOrderByColumValues().get(i)))) {
-            if (ScanQuery.Order.ASCENDING.equals(ScanQuery.Order.fromString(orderByDirection.get(i)))) {
-              return Comparators.<Comparable>naturalNullsFirst()
-                                .compare(o1.getOrderByColumValues().get(i), o2.getOrderByColumValues().get(i));
-            } else {
-              return Comparators.<Comparable>naturalNullsFirst()
-                                .compare(o2.getOrderByColumValues().get(i), o1.getOrderByColumValues().get(i));
-            }
+          int compare = orderings[i].compare(o1.getOrderByColumValues().get(i), o2.getOrderByColumValues().get(i));
+          if (compare != 0) {
+            return compare;
           }
         }
         return 0;
@@ -192,25 +186,20 @@ abstract class BasedSorterIterator implements Iterator<ScanResultValue>
     return comparator;
   }
 
-  protected Comparator<MultiColumnSorter.MultiColumnSorterElement<List<Object>>> rowsToCompactedListComparator()
+  protected Comparator<Sorter.SorterElement<List<Object>>> rowsToCompactedListComparator()
   {
-    Comparator<MultiColumnSorter.MultiColumnSorterElement<List<Object>>> comparator = new Comparator<MultiColumnSorter.MultiColumnSorterElement<List<Object>>>()
+    Comparator<Sorter.SorterElement<List<Object>>> comparator = new Comparator<Sorter.SorterElement<List<Object>>>()
     {
       @Override
       public int compare(
-          MultiColumnSorter.MultiColumnSorterElement<List<Object>> o1,
-          MultiColumnSorter.MultiColumnSorterElement<List<Object>> o2
+          Sorter.SorterElement<List<Object>> o1,
+          Sorter.SorterElement<List<Object>> o2
       )
       {
         for (int i = 0; i < o1.getOrderByColumValues().size(); i++) {
-          if (!Objects.equals(o1.getOrderByColumValues().get(i), (o2.getOrderByColumValues().get(i)))) {
-            if (ScanQuery.Order.ASCENDING.equals(ScanQuery.Order.fromString(orderByDirection.get(i)))) {
-              return Comparators.<Comparable>naturalNullsFirst()
-                                .compare(o1.getOrderByColumValues().get(i), o2.getOrderByColumValues().get(i));
-            } else {
-              return Comparators.<Comparable>naturalNullsFirst()
-                                .compare(o2.getOrderByColumValues().get(i), o1.getOrderByColumValues().get(i));
-            }
+          int compare = orderings[i].compare(o1.getOrderByColumValues().get(i), o2.getOrderByColumValues().get(i));
+          if (compare != 0) {
+            return compare;
           }
         }
         return 0;
@@ -219,7 +208,7 @@ abstract class BasedSorterIterator implements Iterator<ScanResultValue>
     return comparator;
   }
 
-  abstract MultiColumnSorter<Map<String, Object>> rowsToListMulticolumnSorter();
+  abstract Sorter<Map<String, Object>> rowsToListSorter();
 
-  abstract MultiColumnSorter<List<Object>> rowsToCompactedListMulticolumnSorter();
+  abstract Sorter<List<Object>> rowsToCompactedListSorter();
 }

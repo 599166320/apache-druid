@@ -20,7 +20,7 @@
 package org.apache.druid.query.scan;
 
 import com.google.common.base.Preconditions;
-import org.apache.druid.collections.MultiColumnSorter;
+import org.apache.druid.collections.Sorter;
 import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.guava.BaseSequence;
@@ -54,7 +54,7 @@ class TopKOffsetSequence extends BaseSequence<ScanResultValue, Iterator<ScanResu
     private final ScanQuery query;
     private final SegmentId segmentId;
     private final List<String> allColumns;
-    private final MultiColumnSorter<Long> multiColumnSorter;
+    private final Sorter<Long> sorter;
 
     public TopKOffsetIteratorMaker(
         List<String> sortColumns,
@@ -65,7 +65,7 @@ class TopKOffsetSequence extends BaseSequence<ScanResultValue, Iterator<ScanResu
         ScanQuery query,
         SegmentId segmentId,
         List<String> allColumns,
-        MultiColumnSorter<Long> multiColumnSorter
+        Sorter<Long> sorter
     )
     {
       this.sortColumns = sortColumns;
@@ -76,7 +76,7 @@ class TopKOffsetSequence extends BaseSequence<ScanResultValue, Iterator<ScanResu
       this.query = query;
       this.segmentId = segmentId;
       this.allColumns = allColumns;
-      this.multiColumnSorter = multiColumnSorter;
+      this.sorter = sorter;
     }
 
     @Override
@@ -117,7 +117,7 @@ class TopKOffsetSequence extends BaseSequence<ScanResultValue, Iterator<ScanResu
             throw new QueryTimeoutException(StringUtils.nonStrictFormat("Query [%s] timed out", query.getId()));
           }
           this.rowsToCompactedList();
-          return new ScanResultValue(segmentId.toString(), allColumns, multiColumnSorter);
+          return new ScanResultValue(segmentId.toString(), allColumns, sorter);
         }
 
         @Override
@@ -132,7 +132,7 @@ class TopKOffsetSequence extends BaseSequence<ScanResultValue, Iterator<ScanResu
             List<Comparable> sortValues = sortColumns.stream()
                                                      .map(c -> (Comparable) getColumnValue(sortColumns.indexOf(c)))
                                                      .collect(Collectors.toList());
-            multiColumnSorter.add(new MultiColumnSorter.MultiColumnSorterElement<>(this.offset, sortValues));
+            sorter.add(new Sorter.SorterElement<>(this.offset, sortValues));
             cursor.advance();
             ++this.offset;
           }

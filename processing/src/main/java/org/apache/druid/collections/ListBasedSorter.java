@@ -33,20 +33,20 @@ import java.util.stream.Collectors;
  * This sorter is suitable for sorting full data
  */
 @NotThreadSafe
-public class ListBasedMulticolumnSorter<T> implements MultiColumnSorter<T>
+public class ListBasedSorter<T> implements Sorter<T>
 {
 
-  private final Comparator<MultiColumnSorterElement<T>> comparator;
-  private final List<MultiColumnSorterElement<T>> list = new ArrayList<>();
+  private final Comparator<SorterElement<T>> comparator;
+  private final List<SorterElement<T>> list = new ArrayList<>();
   private boolean isSorted = false;
 
-  public ListBasedMulticolumnSorter(Comparator<MultiColumnSorterElement<T>> comparator)
+  public ListBasedSorter(Comparator<SorterElement<T>> comparator)
   {
     this.comparator = comparator;
   }
 
   @Override
-  public void add(MultiColumnSorterElement<T> sorterElement)
+  public void add(SorterElement<T> sorterElement)
   {
     list.add(sorterElement);
     isSorted = false;

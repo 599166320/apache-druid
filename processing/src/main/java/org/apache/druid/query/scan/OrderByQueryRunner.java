@@ -22,9 +22,10 @@ package org.apache.druid.query.scan;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
+import com.google.common.collect.Ordering;
 import com.google.common.collect.Sets;
-import org.apache.druid.collections.MultiColumnSorter;
-import org.apache.druid.collections.QueueBasedMultiColumnSorter;
+import org.apache.druid.collections.QueueBasedSorter;
+import org.apache.druid.collections.Sorter;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.JodaUtils;
 import org.apache.druid.java.util.common.granularity.Granularities;
@@ -161,98 +162,90 @@ class OrderByQueryRunner implements QueryRunner<ScanResultValue>
     // If the row count is not set, set it to 0, else do nothing.
     responseContext.addRowScanCount(0);
     return getScanOrderByResultValueSequence(
-        query,
-        responseContext,
-        legacy,
-        hasTimeout,
-        timeoutAt,
-        adapter,
-        allColumns,
-        intervals,
-        segmentId,
-        filter,
-        queryMetrics
+        new CursorDefinition(
+            query,
+            responseContext,
+            legacy,
+            hasTimeout,
+            timeoutAt,
+            adapter,
+            allColumns,
+            intervals,
+            segmentId,
+            filter,
+            queryMetrics
+        )
     );
   }
 
   protected Sequence<ScanResultValue> getScanOrderByResultValueSequence(
-      final ScanQuery query,
-      final ResponseContext responseContext,
-      final boolean legacy,
-      final boolean hasTimeout,
-      final long timeoutAt,
-      final StorageAdapter adapter,
-      final List<String> allColumns,
-      final List<Interval> intervals,
-      final SegmentId segmentId,
-      final Filter filter,
-      @Nullable final QueryMetrics<?> queryMetrics
+      CursorDefinition cursorDefinition
   )
   {
-    List<String> sortColumns = query.getOrderBys()
+    List<String> sortColumns = cursorDefinition.query.getOrderBys()
                                     .stream()
                                     .map(orderBy -> orderBy.getColumnName())
                                     .collect(Collectors.toList());
-    List<String> orderByDirection = query.getOrderBys()
+    List<String> orderByDirection = cursorDefinition.query.getOrderBys()
                                          .stream()
                                          .map(orderBy -> orderBy.getOrder().toString())
                                          .collect(Collectors.toList());
-    final int limit = Math.toIntExact(query.getScanRowsLimit());
-    MultiColumnSorter<Long> multiColumnSorter = getMultiColumnSorter(
+    final int limit = Math.toIntExact(cursorDefinition.query.getScanRowsLimit());
+    Sorter<Long> sorter = getSorter(
         orderByDirection,
         limit
     );
 
-    Sequence<Cursor> cursorSequence = adapter.makeCursors(
-        filter,
-        intervals.get(0),
-        query.getVirtualColumns(),
+    Sequence<Cursor> cursorSequence = cursorDefinition.adapter.makeCursors(
+        cursorDefinition.filter,
+        cursorDefinition.intervals.get(0),
+        cursorDefinition.query.getVirtualColumns(),
         Granularities.ALL,
-        query.getTimeOrder().equals(ScanQuery.Order.DESCENDING) ||
-        (query.getTimeOrder().equals(ScanQuery.Order.NONE) && query.isDescending()),
-        queryMetrics
+        cursorDefinition.query.getTimeOrder().equals(ScanQuery.Order.DESCENDING) ||
+        (cursorDefinition.query.getTimeOrder().equals(ScanQuery.Order.NONE) && cursorDefinition.query.isDescending()),
+        cursorDefinition.queryMetrics
     );
 
     //Materialize the data of topKOffsetSequences in advance
     cursorSequence.map(cursor -> new TopKOffsetSequence(
         new TopKOffsetSequence.TopKOffsetIteratorMaker(
             sortColumns,
-            legacy,
+            cursorDefinition.legacy,
             cursor,
-            hasTimeout,
-            timeoutAt,
-            query,
-            segmentId,
-            allColumns,
-            multiColumnSorter
+            cursorDefinition.hasTimeout,
+            cursorDefinition.timeoutAt,
+            cursorDefinition.query,
+            cursorDefinition.segmentId,
+            cursorDefinition.allColumns,
+            sorter
         )
     )).forEach((s) -> {
       s.toList();
     });
-    Map<Long, List<Comparable>> topKOffsetSortValueMap = Maps.newHashMapWithExpectedSize(multiColumnSorter.size());
-    multiColumnSorter.drainOrderByColumValues().forEachRemaining(d -> topKOffsetSortValueMap.putAll(d));
+    Map<Long, List<Comparable>> topKOffsetSortValueMap = Maps.newHashMapWithExpectedSize(sorter.size());
+    sorter.drainOrderByColumValues().forEachRemaining(d -> topKOffsetSortValueMap.putAll(d));
 
     return Sequences.concat(
-        adapter
+        cursorDefinition.adapter
             .makeCursors(
-                filter,
-                intervals.get(0),
-                query.getVirtualColumns(),
+                cursorDefinition.filter,
+                cursorDefinition.intervals.get(0),
+                cursorDefinition.query.getVirtualColumns(),
                 Granularities.ALL,
-                query.getTimeOrder().equals(ScanQuery.Order.DESCENDING) ||
-                (query.getTimeOrder().equals(ScanQuery.Order.NONE) && query.isDescending()),
-                queryMetrics
+                cursorDefinition.query.getTimeOrder().equals(ScanQuery.Order.DESCENDING) ||
+                (cursorDefinition.query.getTimeOrder().equals(ScanQuery.Order.NONE) && cursorDefinition.query.isDescending()),
+                cursorDefinition.queryMetrics
             )
             .map(cursor -> new OrderBySequence(
                 new OrderBySequence.OrderByIteratorMaker(
-                    legacy,
+                    cursorDefinition.legacy,
                     cursor,
-                    hasTimeout,
-                    timeoutAt,
-                    query,
-                    segmentId,
-                    allColumns,
-                    responseContext,
+                    cursorDefinition.hasTimeout,
+                    cursorDefinition.timeoutAt,
+                    cursorDefinition.query,
+                    cursorDefinition.segmentId,
+                    cursorDefinition.allColumns,
+                    cursorDefinition.responseContext,
                     topKOffsetSortValueMap,
                     sortColumns
                 )
@@ -261,33 +254,40 @@ class OrderByQueryRunner implements QueryRunner<ScanResultValue>
   }
 
   @Nonnull
-  private MultiColumnSorter<Long> getMultiColumnSorter(List<String> orderByDirection, int limit)
+  private Sorter<Long> getSorter(List<String> orderByDirection, int limit)
   {
-    Comparator<MultiColumnSorter.MultiColumnSorterElement<Long>> comparator = new Comparator<MultiColumnSorter.MultiColumnSorterElement<Long>>()
+
+    Comparator<Sorter.SorterElement<Long>> comparator = new Comparator<Sorter.SorterElement<Long>>()
     {
+      Ordering<Comparable>[] comparableOrderings = orderByDirection.stream()
+                                                                   .map(d -> (ScanQuery.Order.ASCENDING.equals(ScanQuery.Order.fromString(
+                                                                       d)))
+                                                                             ? (Comparators.<Comparable>naturalNullsFirst())
+                                                                             : (Comparators.<Comparable>naturalNullsFirst()
+                                                                                           .reverse()))
+                                                                   .toArray(Ordering[]::new);
+
       @Override
       public int compare(
-          MultiColumnSorter.MultiColumnSorterElement<Long> o1,
-          MultiColumnSorter.MultiColumnSorterElement<Long> o2
+          Sorter.SorterElement<Long> o1,
+          Sorter.SorterElement<Long> o2
       )
       {
         for (int i = 0; i < o1.getOrderByColumValues().size(); i++) {
-          if (o1.getOrderByColumValues().get(i) != (o2.getOrderByColumValues().get(i))) {
-            if (ScanQuery.Order.ASCENDING.equals(ScanQuery.Order.fromString(orderByDirection.get(i)))) {
-              return Comparators.<Comparable>naturalNullsFirst()
-                                .compare(o1.getOrderByColumValues().get(i), o2.getOrderByColumValues().get(i));
-            } else {
-              return Comparators.<Comparable>naturalNullsFirst()
-                                .compare(o2.getOrderByColumValues().get(i), o1.getOrderByColumValues().get(i));
-            }
+          int compare = comparableOrderings[i].compare(
+              o1.getOrderByColumValues().get(i),
+              o2.getOrderByColumValues().get(i)
+          );
+          if (compare != 0) {
+            return compare;
           }
         }
         return 0;
       }
     };
 
-    MultiColumnSorter<Long> multiColumnSorter = new QueueBasedMultiColumnSorter<Long>(limit, comparator);
-    return multiColumnSorter;
+    Sorter<Long> sorter = new QueueBasedSorter<Long>(limit, comparator);
+    return sorter;
   }
 
   private OrderByQueryRunner getOrderByQueryRunner(ScanQuery scanQuery)
@@ -313,5 +313,47 @@ class OrderByQueryRunner implements QueryRunner<ScanResultValue>
       }
     }
     return this;
+  }
+
+  static class CursorDefinition
+  {
+    final ScanQuery query;
+    final ResponseContext responseContext;
+    final boolean legacy;
+    final boolean hasTimeout;
+    final long timeoutAt;
+    final StorageAdapter adapter;
+    final List<String> allColumns;
+    final List<Interval> intervals;
+    final SegmentId segmentId;
+    final Filter filter;
+    final QueryMetrics<?> queryMetrics;
+
+    CursorDefinition(
+        ScanQuery query,
+        ResponseContext responseContext,
+        boolean legacy,
+        boolean hasTimeout,
+        long timeoutAt,
+        StorageAdapter adapter,
+        List<String> allColumns,
+        List<Interval> intervals,
+        SegmentId segmentId,
+        Filter filter,
+        QueryMetrics<?> queryMetrics
+    )
+    {
+      this.query = query;
+      this.responseContext = responseContext;
+      this.legacy = legacy;
+      this.hasTimeout = hasTimeout;
+      this.timeoutAt = timeoutAt;
+      this.adapter = adapter;
+      this.allColumns = allColumns;
+      this.intervals = intervals;
+      this.segmentId = segmentId;
+      this.filter = filter;
+      this.queryMetrics = queryMetrics;
+    }
   }
 }

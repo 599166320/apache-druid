@@ -33,19 +33,19 @@ import java.util.stream.Collectors;
  * TreeMultisetBaseMulticolumnSorter implements a balanced tree and sorts by user-defined comparison.
  * This sorter is suitable for sorting full data
  */
-public class TreeMultisetBasedMulticolumnSorter<T> implements MultiColumnSorter<T>
+public class TreeMultisetBasedSorter<T> implements Sorter<T>
 {
 
-  private final SortedMultiset<MultiColumnSorter.MultiColumnSorterElement<T>> sortedMultiset;
+  private final SortedMultiset<SorterElement<T>> sortedMultiset;
 
-  public TreeMultisetBasedMulticolumnSorter(Comparator<MultiColumnSorterElement<T>> comparator)
+  public TreeMultisetBasedSorter(Comparator<SorterElement<T>> comparator)
   {
     sortedMultiset = TreeMultiset.create(comparator);
   }
 
 
   @Override
-  public void add(MultiColumnSorterElement<T> sorterElement)
+  public void add(SorterElement<T> sorterElement)
   {
     try {
       sortedMultiset.add(sorterElement);

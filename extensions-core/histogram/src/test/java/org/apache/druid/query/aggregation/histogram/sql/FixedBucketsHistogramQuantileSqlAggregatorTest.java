@@ -623,4 +623,64 @@ public class FixedBucketsHistogramQuantileSqlAggregatorTest extends BaseCalciteQ
         )
     );
   }
+
+
+  @Test
+  public void testGroupByAggregatorDefaultValues1()
+  {
+    cannotVectorize();
+    testQuery(
+        "SELECT\n"
+        + " dim2 "
+        + " FROM foo ORDER BY APPROX_QUANTILE_FIXED_BUCKETS(fbhist_m1, 0.01, 20, 0.0, 10.0)",
+        ImmutableList.of(
+            GroupByQuery.builder()
+                        .setDataSource(CalciteTests.DATASOURCE1)
+                        .setInterval(querySegmentSpec(Filtration.eternity()))
+                        .setDimFilter(selector("dim2", "a", null))
+                        .setGranularity(Granularities.ALL)
+                        .setVirtualColumns(expressionVirtualColumn("v0", "'a'", ColumnType.STRING))
+                        .setDimensions(new DefaultDimensionSpec("v0", "d0", ColumnType.STRING))
+                        .setAggregatorSpecs(
+                            aggregators(
+                                new FilteredAggregatorFactory(
+                                    new FixedBucketsHistogramAggregatorFactory(
+                                        "a0:agg",
+                                        "fbhist_m1",
+                                        20,
+                                        0.0,
+                                        10.0,
+                                        FixedBucketsHistogram.OutlierHandlingMode.IGNORE,
+                                        false
+                                    ),
+                                    selector("dim1", "nonexistent", null)
+                                ),
+                                new FilteredAggregatorFactory(
+                                    new FixedBucketsHistogramAggregatorFactory(
+                                        "a1:agg",
+                                        "m1",
+                                        20,
+                                        0.0,
+                                        10.0,
+                                        FixedBucketsHistogram.OutlierHandlingMode.IGNORE,
+                                        false
+                                    ),
+                                    selector("dim1", "nonexistent", null)
+                                )
+                            )
+                        )
+                        .setPostAggregatorSpecs(
+                            ImmutableList.of(
+                                new QuantilePostAggregator("a0", "a0:agg", 0.01f),
+                                new QuantilePostAggregator("a1", "a1:agg", 0.01f)
+                            )
+                        )
+                        .setContext(QUERY_CONTEXT_DEFAULT)
+                        .build()
+        ),
+        ImmutableList.of(
+            new Object[]{"a", 0.0, 0.0}
+        )
+    );
+  }
 }

@@ -22,15 +22,8 @@ package org.apache.druid.query.scan;
 import org.apache.druid.java.util.common.granularity.Granularities;
 import org.apache.druid.java.util.common.guava.Sequence;
 import org.apache.druid.java.util.common.guava.Sequences;
-import org.apache.druid.query.QueryMetrics;
-import org.apache.druid.query.context.ResponseContext;
-import org.apache.druid.query.filter.Filter;
 import org.apache.druid.segment.Segment;
-import org.apache.druid.segment.StorageAdapter;
-import org.apache.druid.timeline.SegmentId;
-import org.joda.time.Interval;
 
-import javax.annotation.Nullable;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -44,46 +37,36 @@ public class TreeSetBasedOrderByQueryRunner extends OrderByQueryRunner
 
   @Override
   protected Sequence<ScanResultValue> getScanOrderByResultValueSequence(
-      final ScanQuery query,
-      final ResponseContext responseContext,
-      final boolean legacy,
-      final boolean hasTimeout,
-      final long timeoutAt,
-      final StorageAdapter adapter,
-      final List<String> allColumns,
-      final List<Interval> intervals,
-      final SegmentId segmentId,
-      final Filter filter,
-      @Nullable final QueryMetrics<?> queryMetrics
+      CursorDefinition cursorDefinition
   )
   {
-    List<String> sortColumns = query.getOrderBys()
+    List<String> sortColumns = cursorDefinition.query.getOrderBys()
                                     .stream()
                                     .map(orderBy -> orderBy.getColumnName())
                                     .collect(Collectors.toList());
-    List<String> orderByDirection = query.getOrderBys()
+    List<String> orderByDirection = cursorDefinition.query.getOrderBys()
                                          .stream()
                                          .map(orderBy -> orderBy.getOrder().toString())
                                          .collect(Collectors.toList());
 
-    return Sequences.concat(adapter.makeCursors(
-        filter,
-        intervals.get(0),
-        query.getVirtualColumns(),
+    return Sequences.concat(cursorDefinition.adapter.makeCursors(
+        cursorDefinition.filter,
+        cursorDefinition.intervals.get(0),
+        cursorDefinition.query.getVirtualColumns(),
         Granularities.ALL,
-        query.getTimeOrder().equals(ScanQuery.Order.DESCENDING) ||
-        (query.getTimeOrder().equals(ScanQuery.Order.NONE) && query.isDescending()),
-        queryMetrics
+        cursorDefinition.query.getTimeOrder().equals(ScanQuery.Order.DESCENDING) ||
+        (cursorDefinition.query.getTimeOrder().equals(ScanQuery.Order.NONE) && cursorDefinition.query.isDescending()),
+        cursorDefinition.queryMetrics
     ).map(cursor -> new TreeSetBasedSorterSequence(
         new TreeSetBasedSorterSequence.TreeSetBasedSorterIteratorMaker(
             sortColumns,
-            legacy,
+            cursorDefinition.legacy,
             cursor,
-            hasTimeout,
-            timeoutAt,
-            query,
-            segmentId,
-            allColumns,
+            cursorDefinition.hasTimeout,
+            cursorDefinition.timeoutAt,
+            cursorDefinition.query,
+            cursorDefinition.segmentId,
+            cursorDefinition.allColumns,
             orderByDirection
         )
     )));

@@ -131,11 +131,12 @@ public class ScanQueryOrderBySequence extends BaseSequence<ScanResultValue, Iter
                                   limit,
                                   query.getOrderByNoneTimeResultOrdering()
                               );
-                              Yielder<ScanResultValue> yielder = Yielders.each(result);
+
+                              Iterator<ScanResultValue> it = result.toList().iterator();
+
                               List<String> columns = new ArrayList<>();
-                              boolean doneScanning = yielder.isDone();
-                              while (!doneScanning) {
-                                ScanResultValue next = yielder.get();
+                              while (it.hasNext()) {
+                                ScanResultValue next = it.next();
                                 List<ScanResultValue> singleEventScanResultValues = next.toSingleEventScanResultValues();
                                 for (ScanResultValue srv : singleEventScanResultValues) {
                                   columns = columns.isEmpty() ? srv.getColumns() : columns;
@@ -144,8 +145,6 @@ public class ScanQueryOrderBySequence extends BaseSequence<ScanResultValue, Iter
                                     sorter.add((List<Object>) event);
                                   }
                                 }
-                                yielder = yielder.next(null);
-                                doneScanning = yielder.isDone();
                               }
                               final List<List<Object>> sortedElements = new ArrayList<>(sorter.size());
                               Iterators.addAll(sortedElements, sorter.drainElement());

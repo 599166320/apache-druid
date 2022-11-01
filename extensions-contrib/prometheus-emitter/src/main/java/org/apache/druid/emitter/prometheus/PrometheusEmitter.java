@@ -27,6 +27,7 @@ import io.prometheus.client.Gauge;
 import io.prometheus.client.Histogram;
 import io.prometheus.client.exporter.HTTPServer;
 import io.prometheus.client.exporter.PushGateway;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.druid.java.util.common.concurrent.ScheduledExecutors;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.java.util.emitter.core.Emitter;
@@ -36,6 +37,7 @@ import org.apache.druid.java.util.emitter.service.ServiceMetricEvent;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -57,7 +59,7 @@ public class PrometheusEmitter implements Emitter
 
   private HTTPServer server;
   private PushGateway pushGateway;
-  private String identifier;
+  private volatile String identifier;
   private ScheduledExecutorService exec;
 
   static PrometheusEmitter of(PrometheusEmitterConfig config)
@@ -97,7 +99,14 @@ public class PrometheusEmitter implements Emitter
       }
       exec = ScheduledExecutors.fixed(1, "PrometheusPushGatewayEmitter-%s");
       exec.scheduleAtFixedRate(
-          () -> flush(),
+          () -> {
+            try {
+              flush();
+            }
+            catch (Exception e) {
+              log.error(e, "Unable to flush prometheus metrics to pushGateway");
+            }
+          },
           config.getFlushPeriod(),
           config.getFlushPeriod(),
           TimeUnit.SECONDS
@@ -170,6 +179,9 @@ public class PrometheusEmitter implements Emitter
 
   private void pushMetric()
   {
+    if (StringUtils.isEmpty(identifier)) {
+      return;
+    }
     Map<String, DimensionsAndCollector> map = metrics.getRegisteredMetrics();
     CollectorRegistry metrics = new CollectorRegistry();
     if (config.getNamespace() != null) {
@@ -177,7 +189,18 @@ public class PrometheusEmitter implements Emitter
         for (DimensionsAndCollector collector : map.values()) {
           metrics.register(collector.getCollector());
         }
-        pushGateway.push(metrics, config.getNamespace(), ImmutableMap.of(config.getNamespace(), identifier));
+        Map<String, String> groupingKey = new HashMap<>();
+        if (StringUtils.isNotEmpty(config.getGroupingKey())) {
+          String[] labelValues = config.getGroupingKey().split(";");
+          for (String lableValue : labelValues) {
+            String[] labelValuePair = lableValue.split("=");
+            if (labelValuePair.length == 2) {
+              groupingKey.put(labelValuePair[0], labelValuePair[1]);
+            }
+          }
+        }
+        groupingKey.put(config.getNamespace(), identifier);
+        pushGateway.push(metrics, config.getNamespace(), ImmutableMap.copyOf(groupingKey));
       }
       catch (IOException e) {
         log.error(e, "Unable to push prometheus metrics to pushGateway");

@@ -69,6 +69,8 @@ public class SimpleQueryableIndex extends AbstractIndex implements QueryableInde
       }
     }
     this.columnNames = columnNamesBuilder.build();
+    ColumnHolder aa = null;
+    //aa.getColumn().makeColumnValueSelector();
     this.availableDimensions = dimNames;
     this.bitmapFactory = bitmapFactory;
     this.columns = columns;

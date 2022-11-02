@@ -29,11 +29,16 @@ import org.apache.druid.collections.bitmap.RoaringBitmapFactory;
 import org.apache.druid.collections.bitmap.WrappedRoaringBitmap;
 import org.apache.druid.java.util.common.granularity.Granularity;
 import org.apache.druid.java.util.common.io.Closer;
+import org.apache.druid.query.DefaultBitmapResultFactory;
 import org.apache.druid.query.Query;
 import org.apache.druid.query.QueryMetrics;
 import org.apache.druid.query.filter.Filter;
 import org.apache.druid.segment.column.ColumnHolder;
+import org.apache.druid.segment.column.ColumnIndexSupplier;
+import org.apache.druid.segment.column.DictionaryEncodedStringValueIndex;
 import org.apache.druid.segment.column.NumericColumn;
+import org.apache.druid.segment.column.StringValueSetIndex;
+import org.apache.druid.segment.data.Indexed;
 import org.apache.druid.segment.data.Offset;
 import org.joda.time.DateTime;
 import org.joda.time.Interval;
@@ -167,23 +172,46 @@ public class QueryableIndexScanner
     );
 
     final DateTime myBucket = gran.toDateTime(inputInterval.getStartMillis());
-
+    Offset iterativeOffset = null;
 
     if (postFilter == null) {
-      QueryableIndexCursorSequenceBuilder.QueryableIndexCursor(baseCursorOffset, columnSelectorFactory, myBucket);
+      iterativeOffset = baseCursorOffset;
+      //QueryableIndexCursorSequenceBuilder.QueryableIndexCursor(baseCursorOffset, columnSelectorFactory, myBucket);
     } else {
-      FilteredOffset filteredOffset = new FilteredOffset(
+      iterativeOffset = new FilteredOffset(
           baseCursorOffset,
           columnSelectorFactory,
           descending,
           postFilter,
           bitmapIndexSelector
       );
-      QueryableIndexCursorSequenceBuilder.QueryableIndexCursor(filteredOffset, columnSelectorFactory, myBucket);
+      //QueryableIndexCursorSequenceBuilder.QueryableIndexCursor(filteredOffset, columnSelectorFactory, myBucket);
     }
 
     columnSelectorFactory.getRowIdSupplier();
 
+
+    //ColumnSelectorColumnIndexSelectorTest
+    final ColumnIndexSupplier supplier = bitmapIndexSelector.getIndexSupplier("STRING_DICTIONARY_COLUMN_NAME");
+    DictionaryEncodedStringValueIndex bitmapIndex = supplier.as(
+        DictionaryEncodedStringValueIndex.class
+    );
+
+    StringValueSetIndex valueIndex = supplier.as(StringValueSetIndex.class);
+    //获取某个value对应的倒排索引
+    ImmutableBitmap valueBitmap = valueIndex.forValue("foo")
+                                            .computeBitmapResult(
+                                                new DefaultBitmapResultFactory(bitmapIndexSelector.getBitmapFactory())
+                                            );
+
+
+    index.getColumnHolder("").getCapabilities().areDictionaryValuesSorted();
+
+    SimpleQueryableIndex simpleQueryableIndex = (SimpleQueryableIndex) index;
+    //索引字典值和value转换
+    Indexed<String> stringIndexed =  simpleQueryableIndex.getAvailableDimensions();
+    stringIndexed.indexOf("");//通过值获取索引
+    stringIndexed.get(0);//通过索引获取值
 
 
 
@@ -194,10 +222,10 @@ public class QueryableIndexScanner
     //同时对baseOffset和postFilter过滤，生成新的Offset
 
 
-
-
     ColumnValueSelector columnValueSelector = index.getColumnHolder("").getColumn().makeColumnValueSelector(baseCursorOffset);
     columnValueSelector.getObject();
+
+
 
 
     IntIterator ids = filterBitmap.iterator();

@@ -39,6 +39,7 @@ import org.apache.druid.query.QueryTimeoutException;
 import org.apache.druid.query.context.ResponseContext;
 import org.apache.druid.query.filter.Filter;
 import org.apache.druid.segment.BaseObjectColumnValueSelector;
+import org.apache.druid.segment.QueryableIndexScanner;
 import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.StorageAdapter;
 import org.apache.druid.segment.VirtualColumn;
@@ -69,6 +70,11 @@ public class ScanQueryEngine
       @Nullable final QueryMetrics<?> queryMetrics
   )
   {
+
+    if (!query.canPushSort()) {
+      return new QueryableIndexScanner().process(query, segment, responseContext, queryMetrics);
+    }
+
     if (segment.asQueryableIndex() != null && segment.asQueryableIndex().isFromTombstone()) {
       return Sequences.empty();
     }

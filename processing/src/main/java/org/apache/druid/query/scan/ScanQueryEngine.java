@@ -39,7 +39,8 @@ import org.apache.druid.query.QueryTimeoutException;
 import org.apache.druid.query.context.ResponseContext;
 import org.apache.druid.query.filter.Filter;
 import org.apache.druid.segment.BaseObjectColumnValueSelector;
-import org.apache.druid.segment.QueryableIndexScanner;
+import org.apache.druid.segment.QueryableIndex;
+import org.apache.druid.segment.QueryableIndexOrderbyRunner;
 import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.StorageAdapter;
 import org.apache.druid.segment.VirtualColumn;
@@ -57,6 +58,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Set;
 
 public class ScanQueryEngine
@@ -70,12 +72,12 @@ public class ScanQueryEngine
       @Nullable final QueryMetrics<?> queryMetrics
   )
   {
-
-    if (!query.canPushSort()) {
-      return new QueryableIndexScanner().process(query, segment, responseContext, queryMetrics);
+    QueryableIndex queryableIndex = segment.asQueryableIndex();
+    if (!query.canPushSort() && Objects.nonNull(queryableIndex) && query.context().getBoolean("queryableIndexOrderbyRunner",false)) {
+      return new QueryableIndexOrderbyRunner().process(query, segment, responseContext, queryMetrics, queryableIndex);
     }
 
-    if (segment.asQueryableIndex() != null && segment.asQueryableIndex().isFromTombstone()) {
+    if (queryableIndex != null && queryableIndex.isFromTombstone()) {
       return Sequences.empty();
     }
 

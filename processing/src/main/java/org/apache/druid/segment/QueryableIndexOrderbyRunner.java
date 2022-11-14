@@ -29,10 +29,8 @@ import com.google.common.collect.Sets;
 import org.apache.druid.collections.QueueBasedSorter;
 import org.apache.druid.collections.Sorter;
 import org.apache.druid.collections.bitmap.ImmutableBitmap;
-import org.apache.druid.collections.bitmap.MutableBitmap;
-import org.apache.druid.collections.bitmap.RoaringBitmapFactory;
 import org.apache.druid.collections.bitmap.WrappedImmutableRoaringBitmap;
-import org.apache.druid.collections.bitmap.WrappedRoaringBitmap;
+import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.granularity.Granularities;
@@ -66,7 +64,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-public class QueryableIndexScanner
+public class QueryableIndexOrderbyRunner
 {
   static final String LEGACY_TIMESTAMP_KEY = "timestamp";
 
@@ -74,10 +72,11 @@ public class QueryableIndexScanner
       final ScanQuery query,
       final Segment segment,
       final ResponseContext responseContext,
-      @Nullable final QueryMetrics<?> queryMetrics
+      @Nullable final QueryMetrics<?> queryMetrics,
+      QueryableIndex index
   )
   {
-    if (segment.asQueryableIndex() != null && segment.asQueryableIndex().isFromTombstone()) {
+    if (index != null && index.isFromTombstone()) {
       return Sequences.empty();
     }
     // "legacy" should be non-null due to toolChest.mergeResults
@@ -136,7 +135,7 @@ public class QueryableIndexScanner
     Preconditions.checkArgument(intervals.size() == 1, "Can only handle a single interval, got[%s]", intervals);
     final SegmentId segmentId = segment.getId();
     final Filter filter = Filters.convertToCNFFromQueryContext(query, Filters.toFilter(query.getFilter()));
-    QueryableIndex index = segment.asQueryableIndex();
+
     VirtualColumns virtualColumns = query.getVirtualColumns();
 
     final Closer closer = Closer.create();
@@ -166,131 +165,156 @@ public class QueryableIndexScanner
     } else {
       baseOffset = BitmapOffset.of(filterBitmap, descending, index.getNumRows());
     }
-    final NumericColumn timestamps = (NumericColumn) columnCache.getColumn(ColumnHolder.TIME_COLUMN_NAME);
+
     Granularity gran = Granularities.ALL;
-    Interval interval = intervals.get(0);
-    Iterable<Interval> iterable = gran.getIterable(interval);
+    final DateTime minTime;
+    final DateTime maxTime;
+    final NumericColumn timestamps = (NumericColumn) columnCache.getColumn(ColumnHolder.TIME_COLUMN_NAME);
+    minTime = DateTimes.utc(timestamps.getLongSingleValueRow(0));
+    maxTime = DateTimes.utc(timestamps.getLongSingleValueRow(timestamps.length() - 1));
+
+    final Interval dataInterval = new Interval(minTime, gran.bucketEnd(maxTime));
+
+    final Interval actualInterval = intervals.get(0).overlap(dataInterval);
+
+    if (actualInterval == null) {
+      return Sequences.empty();
+    }
+
+    Iterable<Interval> iterable = gran.getIterable(dataInterval);
     if (descending) {
       iterable = Lists.reverse(ImmutableList.copyOf(iterable));
     }
 
-    Interval inputInterval = iterable.iterator().next();//取第一个试一下
-    final long timeStart = Math.max(interval.getStartMillis(), inputInterval.getStartMillis());
-    final long timeEnd = Math.min(
-        interval.getEndMillis(),
-        gran.increment(inputInterval.getStartMillis())
-    );
+    return Sequences.simple(iterable)
+             .map(inputInterval -> {
+               final long timeStart = Math.max(inputInterval.getStartMillis(), inputInterval.getStartMillis());
+               final long timeEnd = Math.min(
+                   inputInterval.getEndMillis(),
+                   gran.increment(inputInterval.getStartMillis())
+               );
+               //时间范围快速过滤
+               if (descending) {
+                 for (; baseOffset.withinBounds(); baseOffset.increment()) {
+                   if (timestamps.getLongSingleValueRow(baseOffset.getOffset()) < timeEnd) {
+                     break;
+                   }
+                 }
+               } else {
+                 for (; baseOffset.withinBounds(); baseOffset.increment()) {
+                   if (timestamps.getLongSingleValueRow(baseOffset.getOffset()) >= timeStart) {
+                     break;
+                   }
+                 }
+               }
 
-    //时间范围快速过滤
-    if (descending) {
-      for (; baseOffset.withinBounds(); baseOffset.increment()) {
-        if (timestamps.getLongSingleValueRow(baseOffset.getOffset()) < timeEnd) {
-          break;
-        }
-      }
-    } else {
-      for (; baseOffset.withinBounds(); baseOffset.increment()) {
-        if (timestamps.getLongSingleValueRow(baseOffset.getOffset()) >= timeStart) {
-          break;
-        }
-      }
-    }
+               final Offset offset = descending ?
+                                     new QueryableIndexCursorSequenceBuilder.DescendingTimestampCheckingOffset(
+                                         baseOffset,
+                                         timestamps,
+                                         timeStart,
+                                         segment.asStorageAdapter().getMinTime().getMillis() >= timeStart
+                                     ) :
+                                     new QueryableIndexCursorSequenceBuilder.AscendingTimestampCheckingOffset(
+                                         baseOffset,
+                                         timestamps,
+                                         timeEnd,
+                                         segment.asStorageAdapter().getMaxTime().getMillis() < timeEnd
+                                     );
 
-    final Offset offset = descending ?
-                          new QueryableIndexCursorSequenceBuilder.DescendingTimestampCheckingOffset(
-                              baseOffset,
-                              timestamps,
-                              timeStart,
-                              segment.asStorageAdapter().getMinTime().getMillis() >= timeStart
-                          ) :
-                          new QueryableIndexCursorSequenceBuilder.AscendingTimestampCheckingOffset(
-                              baseOffset,
-                              timestamps,
-                              timeEnd,
-                              segment.asStorageAdapter().getMaxTime().getMillis() < timeEnd
-                          );
+               final Offset baseCursorOffset = offset.clone();
 
-    final Offset baseCursorOffset = offset.clone();
+               ColumnSelectorFactory columnSelectorFactory = new QueryableIndexColumnSelectorFactory(
+                   virtualColumns,
+                   descending,
+                   baseCursorOffset.getBaseReadableOffset(),
+                   columnCache
+               );
 
-    final ColumnSelectorFactory columnSelectorFactory = new QueryableIndexColumnSelectorFactory(
-        virtualColumns,
-        descending,
-        baseCursorOffset.getBaseReadableOffset(),
-        columnCache
-    );
+               //final DateTime myBucket = gran.toDateTime(inputInterval.getStartMillis());
+               Offset iterativeOffset;
+               if (postFilter == null) {
+                 iterativeOffset = baseCursorOffset;
+               } else {
+                 iterativeOffset = new FilteredOffset(
+                     baseCursorOffset,
+                     columnSelectorFactory,
+                     descending,
+                     postFilter,
+                     bitmapIndexSelector
+                 );
+               }
 
-    //final DateTime myBucket = gran.toDateTime(inputInterval.getStartMillis());
-    Offset iterativeOffset;
-    if (postFilter == null) {
-      iterativeOffset = baseCursorOffset;
-    } else {
-      iterativeOffset = new FilteredOffset(
-          baseCursorOffset,
-          columnSelectorFactory,
-          descending,
-          postFilter,
-          bitmapIndexSelector
-      );
-    }
+               int limit;
+               if (query.getScanRowsLimit() > Integer.MAX_VALUE) {
+                 limit = Integer.MAX_VALUE;
+               } else {
+                 limit = Math.toIntExact(query.getScanRowsLimit());
+               }
 
-    int limit;
-    if (query.getScanRowsLimit() > Integer.MAX_VALUE) {
-      limit = Integer.MAX_VALUE;
-    } else {
-      limit = Math.toIntExact(query.getScanRowsLimit());
-    }
+               List<String> orderByDims = query.getOrderBys().stream().map(o -> o.getColumnName()).collect(Collectors.toList());
 
-    List<String> orderByDims = query.getOrderBys().stream().map(o -> o.getColumnName()).collect(Collectors.toList());
-    //offset关联Selector
-    List<ColumnValueSelector> columnValueSelectors = orderByDims.stream()
-                                                                .map(d -> index.getColumnHolder(d)
-                                                                               .getColumn()
-                                                                               .makeColumnValueSelector(baseCursorOffset))
-                                                                .collect(Collectors.toList());
+               //offset关联Selector
+               ColumnSelectorFactory finalColumnSelectorFactory = columnSelectorFactory;
+               List<ColumnValueSelector> columnValueSelectors = orderByDims.stream().map(d -> finalColumnSelectorFactory.makeColumnValueSelector(d)).collect(Collectors.toList());
+               /*List<ColumnValueSelector> columnValueSelectors = orderByDims.stream()
+                                                                           .map(d -> index.getColumnHolder(d)
+                                                                                          .getColumn()
+                                                                                          .makeColumnValueSelector(baseCursorOffset))
+                                                                           .collect(Collectors.toList());*/
 
-    List<Integer> sortColumnIdxs = new ArrayList<>(orderByDims.size());
-    for (int i = 0; i < orderByDims.size(); i++) {
-      sortColumnIdxs.add(i+1);
-    }
-    Sorter<Object> sorter =  new QueueBasedSorter<>(limit, getOrderByNoneTimeResultOrdering(query,sortColumnIdxs));
-    while (iterativeOffset.withinBounds()) {
-      int rowId = iterativeOffset.getOffset();
-      final List<Object> theEvent = new ArrayList<>(columnValueSelectors.size());
-      theEvent.add(rowId);
-      for (ColumnValueSelector selector : columnValueSelectors) {
-        theEvent.add(selector.getObjectOrDictionaryId());
-      }
-      sorter.add(theEvent);
-      iterativeOffset.increment();
-    }
+               List<Integer> sortColumnIdxs = new ArrayList<>(orderByDims.size());
+               for (int i = 0; i < orderByDims.size(); i++) {
+                 sortColumnIdxs.add(i+1);
+               }
+               Sorter<Object> sorter =  new QueueBasedSorter<>(limit, getOrderByNoneTimeResultOrdering(query,sortColumnIdxs));
+               while (iterativeOffset.withinBounds()) {
+                 int rowId = iterativeOffset.getOffset();
+                 final List<Object> theEvent = new ArrayList<>(columnValueSelectors.size());
+                 theEvent.add(rowId);
+                 for (ColumnValueSelector selector : columnValueSelectors) {
+                   theEvent.add(selector.getObjectOrDictionaryId());
+                 }
+                 sorter.add(theEvent);
+                 iterativeOffset.increment();
+               }
 
-    //rowId和排序字段
-    final List<List<Object>> sortedElements = new ArrayList<>(sorter.size());
-    Iterators.addAll(sortedElements, sorter.drainElement());
-    MutableRoaringBitmap mutableBitmap = new MutableRoaringBitmap();
-    sortedElements.forEach(rowId -> mutableBitmap.add((Integer) rowId.get(0)));
-    ImmutableBitmap bitmap = new WrappedImmutableRoaringBitmap(mutableBitmap.toImmutableRoaringBitmap());
-    Offset selectOffset = BitmapOffset.of(bitmap, descending, sortedElements.size());
+               //rowId和排序字段
+               final List<List<Object>> sortedElements = new ArrayList<>(sorter.size());
+               Iterators.addAll(sortedElements, sorter.drainElement());
+               MutableRoaringBitmap mutableBitmap = new MutableRoaringBitmap();
+               sortedElements.forEach(rowId -> mutableBitmap.add((Integer) rowId.get(0)));
+               ImmutableBitmap bitmap = new WrappedImmutableRoaringBitmap(mutableBitmap.toImmutableRoaringBitmap());
+               Offset selectOffset = BitmapOffset.of(bitmap, descending, sortedElements.size());
 
-    columnValueSelectors = allColumns.stream()
-                                     .map(d -> index.getColumnHolder(d)
-                                                    .getColumn()
-                                                    .makeColumnValueSelector(selectOffset))
-                                     .collect(Collectors.toList());
+               QueryableIndexColumnSelectorFactory columnValueSelectorFactory = new QueryableIndexColumnSelectorFactory(
+                   virtualColumns,
+                   descending,
+                   selectOffset.getBaseReadableOffset(),
+                   columnCache
+               );
 
-    int i = 0;
-    while (selectOffset.withinBounds()) {
-      final List<Object> theEvent = new ArrayList<>(columnValueSelectors.size());
-      for (ColumnValueSelector selector : columnValueSelectors) {
-        theEvent.add(selector.getObject());
-      }
-      sortedElements.set(i++, theEvent);
-      selectOffset.increment();
-    }
+               columnValueSelectors = allColumns.stream()
+                                                .map(d -> columnValueSelectorFactory.makeColumnValueSelector(d))
+                                                .collect(Collectors.toList());
+               /*columnValueSelectors = allColumns.stream()
+                                                .map(d -> index.getColumnHolder(d)
+                                                               .getColumn()
+                                                               .makeColumnValueSelector(selectOffset))
+                                                .collect(Collectors.toList());*/
 
-    return Sequences.simple(ImmutableList.of(new ScanResultValue(segmentId.toString(), allColumns, sortedElements)));
+               int i = 0;
+               while (selectOffset.withinBounds()) {
+                 final List<Object> theEvent = new ArrayList<>(columnValueSelectors.size());
+                 for (ColumnValueSelector selector : columnValueSelectors) {
+                   theEvent.add(selector.getObject());
+                 }
+                 sortedElements.set(i++, theEvent);
+                 selectOffset.increment();
+               }
+               return new ScanResultValue(segmentId.toString(), allColumns, sortedElements);
+             }).withBaggage(closer);
   }
-
 
   public Ordering<List<Object>> getOrderByNoneTimeResultOrdering(ScanQuery query,List<Integer> sortColumnIdxs)
   {

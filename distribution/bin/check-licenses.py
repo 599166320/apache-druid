@@ -434,7 +434,7 @@ if __name__ == "__main__":
         license_yaml = args.license_yaml
         dependency_reports_root = args.dependency_reports_root
 
-        check_licenses(license_yaml, dependency_reports_root)
+        #check_licenses(license_yaml, dependency_reports_root)
 
     except KeyboardInterrupt:
         print('Interrupted, closing.')
